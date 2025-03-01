@@ -139,6 +139,9 @@ type ClientInterface interface {
 
 	// GetArtistsUsername request
 	GetArtistsUsername(ctx context.Context, username string, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// GetGroups request
+	GetGroups(ctx context.Context, reqEditors ...RequestEditorFn) (*http.Response, error)
 }
 
 func (c *Client) GetArtists(ctx context.Context, params *GetArtistsParams, reqEditors ...RequestEditorFn) (*http.Response, error) {
@@ -179,6 +182,18 @@ func (c *Client) PostArtists(ctx context.Context, body PostArtistsJSONRequestBod
 
 func (c *Client) GetArtistsUsername(ctx context.Context, username string, reqEditors ...RequestEditorFn) (*http.Response, error) {
 	req, err := NewGetArtistsUsernameRequest(c.Server, username)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) GetGroups(ctx context.Context, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewGetGroupsRequest(c.Server)
 	if err != nil {
 		return nil, err
 	}
@@ -328,6 +343,33 @@ func NewGetArtistsUsernameRequest(server string, username string) (*http.Request
 	return req, nil
 }
 
+// NewGetGroupsRequest generates requests for GetGroups
+func NewGetGroupsRequest(server string) (*http.Request, error) {
+	var err error
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/groups")
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest("GET", queryURL.String(), nil)
+	if err != nil {
+		return nil, err
+	}
+
+	return req, nil
+}
+
 func (c *Client) applyEditors(ctx context.Context, req *http.Request, additionalEditors []RequestEditorFn) error {
 	for _, r := range c.RequestEditors {
 		if err := r(ctx, req); err != nil {
@@ -381,6 +423,9 @@ type ClientWithResponsesInterface interface {
 
 	// GetArtistsUsernameWithResponse request
 	GetArtistsUsernameWithResponse(ctx context.Context, username string, reqEditors ...RequestEditorFn) (*GetArtistsUsernameResponse, error)
+
+	// GetGroupsWithResponse request
+	GetGroupsWithResponse(ctx context.Context, reqEditors ...RequestEditorFn) (*GetGroupsResponse, error)
 }
 
 type GetArtistsResponse struct {
@@ -455,6 +500,33 @@ func (r GetArtistsUsernameResponse) StatusCode() int {
 	return 0
 }
 
+type GetGroupsResponse struct {
+	Body         []byte
+	HTTPResponse *http.Response
+	JSON200      *[]struct {
+		AlbumsRecorded *int    `json:"albums_recorded,omitempty"`
+		GroupGenre     *string `json:"group_genre,omitempty"`
+		GroupName      *string `json:"group_name,omitempty"`
+	}
+	JSON400 *N400Error
+}
+
+// Status returns HTTPResponse.Status
+func (r GetGroupsResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r GetGroupsResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
 // GetArtistsWithResponse request returning *GetArtistsResponse
 func (c *ClientWithResponses) GetArtistsWithResponse(ctx context.Context, params *GetArtistsParams, reqEditors ...RequestEditorFn) (*GetArtistsResponse, error) {
 	rsp, err := c.GetArtists(ctx, params, reqEditors...)
@@ -488,6 +560,15 @@ func (c *ClientWithResponses) GetArtistsUsernameWithResponse(ctx context.Context
 		return nil, err
 	}
 	return ParseGetArtistsUsernameResponse(rsp)
+}
+
+// GetGroupsWithResponse request returning *GetGroupsResponse
+func (c *ClientWithResponses) GetGroupsWithResponse(ctx context.Context, reqEditors ...RequestEditorFn) (*GetGroupsResponse, error) {
+	rsp, err := c.GetGroups(ctx, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseGetGroupsResponse(rsp)
 }
 
 // ParseGetArtistsResponse parses an HTTP response from a GetArtistsWithResponse call
@@ -586,6 +667,43 @@ func ParseGetArtistsUsernameResponse(rsp *http.Response) (*GetArtistsUsernameRes
 	return response, nil
 }
 
+// ParseGetGroupsResponse parses an HTTP response from a GetGroupsWithResponse call
+func ParseGetGroupsResponse(rsp *http.Response) (*GetGroupsResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &GetGroupsResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 200:
+		var dest []struct {
+			AlbumsRecorded *int    `json:"albums_recorded,omitempty"`
+			GroupGenre     *string `json:"group_genre,omitempty"`
+			GroupName      *string `json:"group_name,omitempty"`
+		}
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON200 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 400:
+		var dest N400Error
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON400 = &dest
+
+	}
+
+	return response, nil
+}
+
 // ServerInterface represents all server handlers.
 type ServerInterface interface {
 
@@ -597,6 +715,9 @@ type ServerInterface interface {
 
 	// (GET /artists/{username})
 	GetArtistsUsername(ctx echo.Context, username string) error
+
+	// (GET /groups)
+	GetGroups(ctx echo.Context) error
 }
 
 // ServerInterfaceWrapper converts echo contexts to parameters.
@@ -660,6 +781,17 @@ func (w *ServerInterfaceWrapper) GetArtistsUsername(ctx echo.Context) error {
 	return err
 }
 
+// GetGroups converts echo context to params.
+func (w *ServerInterfaceWrapper) GetGroups(ctx echo.Context) error {
+	var err error
+
+	ctx.Set(BasicAuthScopes, []string{})
+
+	// Invoke the callback with all the unmarshaled arguments
+	err = w.Handler.GetGroups(ctx)
+	return err
+}
+
 // This is a simple interface which specifies echo.Route addition functions which
 // are present on both echo.Echo and echo.Group, since we want to allow using
 // either of them for path registration
@@ -691,25 +823,26 @@ func RegisterHandlersWithBaseURL(router EchoRouter, si ServerInterface, baseURL 
 	router.GET(baseURL+"/artists", wrapper.GetArtists)
 	router.POST(baseURL+"/artists", wrapper.PostArtists)
 	router.GET(baseURL+"/artists/:username", wrapper.GetArtistsUsername)
+	router.GET(baseURL+"/groups", wrapper.GetGroups)
 
 }
 
 // Base64 encoded, gzipped, json marshaled Swagger object
 var swaggerSpec = []string{
 
-	"H4sIAAAAAAAC/7xV0Wv7NhD+V4S2R1On257ylsIYhUHLwp5KKIp9TlRsSbk7ZQvB//s42bXdxintCr83",
-	"Wzrdd/fp+05nXfgmeAeOSS/POhg0DTBg+ns0O/jTNpblpwQq0Aa23umlTsukeA/KxWYLqHylLENDyjtl",
-	"VDA70Jm2EnuIgCedaWca0Etdp4yZpmIPjZHUfAqyYR3DDlC3bZagH6qKYAZ7HaCwlYUOXpAmNciSQbYk",
-	"1Xm1BVVaCrU5QXmlHt/BfFhQm2kECt4RJGZ+Wyx+R/Qo34V3DC7VaUKobWGkzvyFpNjzJGtAHwDZdika",
-	"IBKSRjhitG6X2u9X/PYFCu7w33Jw746mtqVCOEQgToc6pJR8lRi4BDX1Njb0jFB4LKGc6zXTHX3PO3A4",
-	"V94Q0PE3sx8J8MpmIvIQLQr40xi5uew50wRFRMuntTTWNXBnyBaryPuBWjmzlVU9pNgzh4406yp/KaCV",
-	"ItuEGtTq8V5EYus6EqNhUA8BnKwW3hUQmCSp5VqyrvszqXk5qjN9BKQu5+3N4mYhzfsAzgSrl/rXtJTp",
-	"YHifis97Ycr3bk7ZfwFHdKSMqgXDV69S1ikvJmXdl3qp/wBeDVtT1z6d9c8IlV7qn/LR2/kYko+ubrNP",
-	"Bfc+bDfvTPDLYvEl/afxIB9zmL148165owcMojnNWWAdiwKIqljXJ4WJOShnqGszses13KGjfPB0wgqe",
-	"5sYesNyOyFZJhDLKwT891MUlPXqa3FJv1Ttfnr5E22fYeusrxgjt/GV9QGGBYDgxOGnp/5DXZoPS8/Or",
-	"w9uron/YsrFOiVWxSSQos/WRlXF9FapC36i9JeVR7QFVdPYQQQ3T47o7/h5D3rkkPQVizfElmOR7S+bM",
-	"2zAMtO+64scP6M+8L1fM5b6li8lIT1cwGeZPGyGSAI+v9xOx7kc5LfMc/jUyfW+sz4+3ut20/wUAAP//",
-	"v4zBVboIAAA=",
+	"H4sIAAAAAAAC/7xVQW/zNgz9K4K2o1Gn2065pcBQFBjQYsFORVAoMp2osCWFlLIFgf/7QNmx3cYp0vbD",
+	"d7Mlio985COPUrvaOws2kJwfpVeoagiA6e9JbeAvU5vAPwWQRuODcVbOZTomEbYgbKzXgMKVwgSoSTgr",
+	"lPBqAzKThm13EfAgM2lVDXIuq+Qxk6S3UCt2HQ6eL4wNsAGUTZMl6MeyJJjAXnrQpjTQwjPSKAY+UhgM",
+	"cXROrEEUhnylDlBciMe1MB8G1GQSgbyzBImZP2azPxEd8rd2NoBNcSrvK6MVx5m/Egd7HHn16DxgMK2L",
+	"GoiYpAGOAhq7Sel3J279Cjq0+G85eLB7VZlCIOwiUEiPWqTkfJEYOAdV1TrW9IKgHRZQTOWayZa+lw1Y",
+	"nAqvN2j5m7iPBHjhMhG5iwYZ/HmwXJ3nnEkCHdGEw5ITaxO4U2T0IoZtTy2/WfOp7F1sQ/AtacaW7ryB",
+	"FoJM7SsQi6cHbhJTVZECqgDi0YPlU+2sBh+InZpQsddl9yYlz09lJveA1Pq8vZndzDh558Eqb+Rc/p6O",
+	"MulV2Kbg864x+Xsz1dl/Q4hoSShRMYYrT60sk19MnfVQyLm8h7Dor8aqfT7KXxFKOZe/5IO288EkH1Td",
+	"ZFcZdzpsVu9E8Nts9qn+T+OBP6Ywu+bNu84dNKAQ1WFKAsuoNRCVsaoOAhNzUExQ12Qs10u4fUZ5r+mE",
+	"5R1NjT0IXB1uW8EWQgkL/3ZQZ0V6cjSqUifVO1ccPkXbNWy91VXACM10sT6gUCOokBgcpfQV8pqs7/T8",
+	"eFJ4c7HpH9dBGStYqlgnEoRauxiEsl0UokRXi60h4VBsAUW0ZhdB9NPjsjr+GUzeqSStApbmsAlG/t6S",
+	"ObEb+oH2XVX8/AF9zX65IC773b7YoIv+MwOwezBR4fvTzY8ZSl+oQ4rtgzK091dX4fsjryPrS8UZ7duk",
+	"j9GmfV5xlxPg/iSeiFW3Z2me5/Cf4tV4Y1y+v5XNqvk/AAD//9Zhs5BXCgAA",
 }
 
 // GetSwagger returns the content of the embedded swagger specification file

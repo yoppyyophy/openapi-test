@@ -34,6 +34,10 @@ func (Server) GetArtistsUsername(ctx echo.Context, username string) error {
 	return nil
 }
 
+func (Server) GetGroups(ctx echo.Context) error {
+	return nil
+}
+
 func main() {
 	server := NewServer()
 
